@@ -1,0 +1,315 @@
+# coding:UTF-8
+
+from PyQt4 import QtGui, QtCore
+from PyQt4.QtGui  import *
+from PyQt4.QtCore  import *
+import View
+import os
+import shutil
+import codecs
+import time
+import sys
+import re
+import urllib
+import urllib2
+import cookielib
+import HTMLParser
+import webbrowser
+from bs4 import BeautifulSoup
+
+baseUrl = 'https://10.116.8.65:8002'
+# baseUrl = "http://10.116.15.65:9001"
+
+
+class Example(QtGui.QMainWindow):
+    def __init__(self):
+        super(Example, self).__init__()
+        self.initUI()
+
+    def initUI(self):
+        self.ui = View.Ui_MainWindow()
+        self.ui.setupUi(self)
+        # 得到今天日期
+        today = QDate.currentDate()
+        self.year = str(today.year())
+        self.month = str(today.month())
+        self.day = str(today.day())
+        # 设置默认ui
+        # self.ui.inputTextEdit.setPlainText("9999.00\tRT1405816747")
+        self.ui.outputTextEdit.setReadOnly(True)
+        # 设置event响应
+        self.ui.payBtn.clicked.connect(self.directPayAll)
+        self.ui.refreshBtn.clicked.connect(self.refreshAll)
+        self.ui.mergeBtn.clicked.connect(self.mergeSameRTnum)
+        # 得到Cookies
+        self.getCookies()
+
+    def refreshAll(self):
+        self.allResult = []
+        searchStr = ''
+        i = 1
+        html = self.refreshPage(i)
+        while not html.find(class_="empty"):
+            rows = html.find(id="sheets").find_all("tr")
+            for row in rows[1:]:
+                self.allResult.append(row)
+            i = i + 1
+            html = self.refreshPage(i)
+        # self.allResult 为所有数据
+        # print self.allResult[0]
+        for row in self.allResult:
+            temp = row.find(id=re.compile("_extCheckNo")).parent
+            money = temp.previous_sibling.previous_sibling
+            moneyNum = str(money.text).strip()
+            rtnum = temp.previous_sibling.previous_sibling.previous_sibling.previous_sibling
+            rtNum = str(rtnum.text).strip()
+            searchStr += moneyNum + '\t' + rtNum + '\n'
+        self.ui.inputTextEdit.setPlainText(searchStr)
+
+    def refreshPage(self, page):
+        url = baseUrl + "/vfs2/account/sheetRetailAccountBalanceMRSheetList.html" + "?searchFlag=true&mrDate1=%s&mrDate2=&d-447250-p=%d&status=1&moneyStart=&actDate2=&actDate1=&explain=&moneyEnd=" % (self.year + '-' + self.month + '-' + self.day, page)
+        print page
+        req = urllib2.Request(url)
+        req.add_header("Referer", baseUrl+"/vfs2/account/sheetRetailAccountBalanceMRSheetList.html")
+        resp = urllib2.urlopen(req)
+        return BeautifulSoup(resp.read())
+
+    def mergeSameRTnum(self):
+        print "begin merge the same rtnum"
+        allResult = ''
+        allData = {}
+        allDataCount = {}
+        itemList = self.ui.inputTextEdit.toPlainText().split("\n")
+        for line in itemList:
+            items = str(line).split('\t')
+            while '' in items:
+                items.remove('')
+            if len(items) > 0:
+                items[0] = items[0].replace(',', '')
+                print items[1]
+                if items[1] not in allData:
+                    allData[items[1]] = float(items[0])
+                    allDataCount[items[1]] = 1
+                else:
+                    allData[items[1]] += float(items[0])
+                    allDataCount[items[1]] += 1
+        for (k,v) in allData.items():
+            allResult += str(v) + '\t' + k + '\t' + str(allDataCount[k]) + '\n'
+        self.ui.inputTextEdit.setPlainText(allResult)
+
+    def directPayAll(self):
+        alreadyDirectPayList = []
+        reStr = '%s-%s-%s' % (self.year, self.month, self.day)
+        print u'read alreadyDirectPayList'
+        filelist = os.listdir('./')
+        for item in filelist:
+            temp = re.match(reStr, item)
+            if temp:
+                print item
+                with open(item, 'r') as f:
+                    for line in f:
+                        alreadyDirectPayList.append(line.split(':')[0])
+        print "begin"
+        allResult = ''
+        itemList = self.ui.inputTextEdit.toPlainText().split("\n")
+        index = 1
+        total = len(itemList)
+        # 循环获得一个可用的文件名
+        path = '%s-%s-%s' % (self.year, self.month, self.day)
+        print path
+        while True:
+            if os.path.exists(path+'.txt'):
+                print 'in'
+                path += ' 1'
+            else:
+                path += '.txt'
+                break
+        writeHandle = codecs.open(path, mode='w', encoding='utf-8')
+        for line in itemList:
+            items = str(line).split('\t')
+            while '' in items:
+                items.remove('')
+            if len(items) > 0:
+                # 去掉数字中3位一个的,
+                items[0] = items[0].replace(',', '')
+                if items[0] != '' and items[1] != '':
+                    print items[0] + ":" + items[1]
+                #
+                # (已解决,待测试)考虑了一下好像有问题,如果第一次钱不够是不是会被计入已点,这样如果补汇就不会再点了
+                #
+                # 如果已经点过了,就跳过不点了
+                if items[1] in alreadyDirectPayList:
+                    writeHandle.write(items[1] + u':已经点过了\n')
+                    allResult += items[1] + u':已经点过\n'
+                    total -= 1
+                    print u'%s:已经点过了' % (items[1])
+                    continue
+                # 0-失败 1-成功 2-无 3-钱不够
+                result, status = self.directPay(float(items[0]), items[1])
+                if status == 0:
+                    print u'进入页面错误,请检查'
+                # 成功的 无的都写入记录,钱不够的不记录,以免补汇后不点
+                elif status == 1 or status == 2:
+                    writeHandle.write(result + '\n')
+                temp = '(%d/%d)%s' % (index, total, result)
+                index += 1
+                print temp
+                allResult += result + '\n'
+        writeHandle.close()
+        self.ui.outputTextEdit.setPlainText(allResult)
+        print "end"
+
+    def directPay(self, payIn, rtnum):
+        # 0-失败 1-成功 2-无 3-钱不够
+        status = 0
+        resultStr = ''
+        dic = {}
+        dic['applyId'] = ''
+        dic['contractId'] = rtnum
+        req = urllib2.Request(baseUrl+"/vfs2/innerpage/loanafterportlet/disposalQueryList.html", urllib.urlencode(dic))
+        req.add_header("Referer", baseUrl+"/vfs2/innerpage/loanafterportlet/disposalQueryList.html")
+        resp = urllib2.urlopen(req)
+        html = BeautifulSoup(resp.read())
+        # print html
+        inputs = html.find_all("input")
+        # 以后可以改为非无脑点，在这里判断金额
+        rAmountInput = html.find(id='rAmount')
+        if rAmountInput:
+            rAmount = self.getShouldPayAmount(inputs)
+            if payIn < rAmount:
+                resultStr = rtnum + u':钱不够'
+                status = 3
+            else:
+                postData = self.fillInPostDict(inputs)
+                req = urllib2.Request(baseUrl+"/vfs2/innerpage/loanafterportlet/foot.html", urllib.urlencode(postData))
+                req.add_header("Referer", baseUrl+"/vfs2/innerpage/loanafterportlet/foot.html")
+                resp = urllib2.urlopen(req)
+                html = BeautifulSoup(resp.read())
+                resultStr = rtnum + u':成功'
+                status = 1
+        # 判断一下到底是没有还是登陆错误
+        else:
+            titleStr = html.find('title').text
+            if u'哦' in titleStr:
+                resultStr = rtnum + u':错误'
+                status = 0
+            else:
+                resultStr = rtnum + u':无'
+                status = 2
+        return (resultStr, status)
+        # print html
+
+
+    # 得到客户应还的金额
+    def getShouldPayAmount(self, inputs):
+        if len(inputs) == 0:
+            return
+        sum = 0
+        for inputItem in inputs:
+                if inputItem.has_attr('id'):
+                    if inputItem.attrs['id'].find("repayamount") != -1:
+                        sum += float(inputItem.attrs['value'])
+        # 四舍五入，保留两位小数round(sum,2)不准确，详见python文档
+        return round(sum * 100) / 100
+
+    def fillInPostDict(self, inputs):
+        postArray = []
+        dic = {}
+        cnameStr = ""
+        feeStr = ""
+        repayflgStr = ""
+        length = len(inputs)
+        # 此字段为运行中加入字段
+        for i in range(length):
+            inputItem = inputs[i]
+            # print inputItem
+            if inputItem.attrs["type"] == "checkbox":
+                inputId = inputItem.attrs['id']
+                if inputId.find("fee") != -1:
+                    flg = inputId[3:len(inputId)]
+                    feeStr = self.getFeeStr(inputs, flg)
+                    postArray.append(("dfee" + str(i), feeStr))
+                    # dic["dfee" + str(i)] = feeStr
+                    cnameStr += "dfee" + str(i) + ","
+                if inputId.find("repayflg") != -1:
+                    flg = inputId[8:len(inputId)]
+                    repayflgStr = self.getRepayflgStr(inputs, flg)
+                    postArray.append(("drepay" + str(i), repayflgStr))
+                    # dic["drepay" + str(i)] = repayflgStr
+                    cnameStr += "drepay" + str(i) + ","
+        # cname字段，根据上一字段运行结果生成
+        postArray.append(("cname", cnameStr[:len(cnameStr)-1]))
+        # dic["cname"] = cnameStr[:len(cnameStr)-1]
+        for inputItem in inputs:
+            if inputItem.has_attr('name') and inputItem.has_attr('value'):
+                postArray.append((inputItem.attrs['name'], inputItem.attrs['value']))
+            elif inputItem.has_attr('type') and inputItem.attrs['type'] == 'checkbox':
+                postArray.append((inputItem.attrs['name'], 'on'))
+                # dic[inputItem.attrs['name']] = inputItem.attrs['value']
+        # 插入总金额
+        postArray.append(("remitAmount", self.getShouldPayAmount(inputs)))
+        return postArray
+        # return dic
+
+    # 得到fee的值，重复，只需获取一遍
+    def getFeeStr(self, inputs, flg):
+        string = ""
+        string += self.getTagFromArrayById(inputs, "deductId" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "fclearType" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "amount" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "applyerType" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "applyerId" + flg).attrs["value"] + ","
+        string += "f"
+        return string
+
+    # 得到repayflg的值，重复，只需获取一遍
+    def getRepayflgStr(self, inputs, flg):
+        string = ""
+        string += self.getTagFromArrayById(inputs, "repayPlanId" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "repayerType" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "repayerId" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "clearType" + flg).attrs["value"] + ","
+        string += self.getTagFromArrayById(inputs, "repayamount" + flg).attrs["value"] + ","
+        string += "r"
+        return string
+
+    def getTagFromArrayByName(self, inputs, name):
+        for tag in inputs:
+            if tag.has_attr('name'):
+                if tag.attrs['name'] == name:
+                    return tag
+        return None
+
+    def getTagFromArrayById(self, inputs, idd):
+        for tag in inputs:
+            if tag.has_attr('id'):
+                if tag.attrs['id'] == idd:
+                    return tag
+        return None
+
+    def getCookies(self):
+        cj = cookielib.CookieJar()
+        opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
+        opener.addheaders = [('User-agent', 'Mozilla/4.0 (compatible; MSIE 7.0; Windows NT 5.1)')]
+        urllib2.install_opener(opener)
+        fileHandle = open('acc.txt', 'r')
+        line = fileHandle.readline()
+        aList = line.split('|')
+        dic={}
+        dic["loginName"] = aList[0]
+        dic["password"] = aList[1]
+        req = urllib2.Request(baseUrl+"/vfs2/login.html", urllib.urlencode(dic))
+        req.add_header("Referer", baseUrl+"/vfs2/login.html")
+        resp = urllib2.urlopen(req)
+        html = BeautifulSoup(resp.read())
+        print html.find('title').text.encode('UTF-8')
+
+
+def main():
+    app = QtGui.QApplication([])
+    ex = Example()
+    ex.show()
+    app.exec_()
+
+if __name__ == '__main__':
+    main()
