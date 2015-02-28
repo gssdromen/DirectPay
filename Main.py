@@ -20,7 +20,7 @@ import HTMLParser
 import HttpHelper
 import webbrowser
 from RowItem import RowItem
-from bs4 import BeautifulSoup
+from BeautifulSoup import BeautifulSoup
 
 
 class Example(QtGui.QMainWindow):
@@ -52,7 +52,7 @@ class Example(QtGui.QMainWindow):
 
     # 台账数据
     def getRowFromData(self, row):
-        tds = row.find_all('td')
+        tds = row.findAll('td')
         action = ''
         date = tds[1].text.strip()
         liushuihao = tds[2].a.text.strip()
@@ -75,10 +75,11 @@ class Example(QtGui.QMainWindow):
         while True:
             html = BeautifulSoup(self.refreshPage(i))
             # 发现为空,跳出循环
-            if html.find(class_="empty"):
+            # if html.find(class_="empty"):
+            if html.find(attrs={'class':'empty'}):
                 break
             else:
-                rows = html.find(id="sheets").find_all("tr")
+                rows = html.find(id="sheets").findAll("tr")
                 for row in rows[1:]:
                     self.allResult.append(row)
                 i = i + 1
@@ -343,7 +344,7 @@ class Example(QtGui.QMainWindow):
         # resp = urllib2.urlopen(req)
         # html = BeautifulSoup(resp.read())
         # print html
-        inputs = html.find_all("input")
+        inputs = html.findAll("input")
         # 是否有总金额框
         rAmountInput = html.find(id='rAmount')
         if rAmountInput:
